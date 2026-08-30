@@ -44,12 +44,16 @@ df -h /workspace
 du -sh /workspace/v21_data /workspace/wildfake_eval /workspace/ai_image_detector/outputs 2>/dev/null
 ```
 
-## 3. 安装依赖
+## 3. 在当前验证 Pod 安装数据工具
+
+当前 Pod 只需要数据处理依赖，不要在这里安装或替换 A100 使用的 CUDA Torch。建议给数据准备单独建环境：
 
 ```bash
 cd /workspace/ai_image_detector
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m venv .venv-data
+source .venv-data/bin/activate
+python -m pip install --upgrade pip
+python -m pip install datasets Pillow ImageHash
 ```
 
 ## 4. 流式抽取 SID_Set
@@ -187,9 +191,15 @@ PY
 ```bash
 cd /workspace/ai_image_detector
 git pull --ff-only
-source .venv/bin/activate
+python -m venv .venv-a100 --system-site-packages
+source .venv-a100/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 python cuda_preflight.py --config config.v2_1.yaml --run-forward
 ```
+
+`.venv-data` 与 `.venv-a100` 分离是有意设计：前者属于当前数据验证 Pod，后者继承 RunPod PyTorch 模板自带的 CUDA Torch，避免把 CPU 版 Torch 或不匹配的 CUDA wheel 带入训练环境。
 
 确认成功后，新建 tmux 会话：
 
@@ -201,7 +211,8 @@ tmux new -s v21
 
 ```bash
 cd /workspace/ai_image_detector
-source .venv/bin/activate
+source .venv-a100/bin/activate
+mkdir -p outputs/dinov2_v2_1
 python -u train.py --config config.v2_1.yaml 2>&1 | tee outputs/dinov2_v2_1/train.log
 ```
 
