@@ -183,6 +183,7 @@ class BinaryImageDataset(Dataset[dict[str, Any]]):
             "label": torch.tensor(sample.label, dtype=torch.float32),
             "degradation": description,
             "sample_id": sample.sample_id,
+            "generator": sample.generator,
         }
 
 
@@ -258,6 +259,7 @@ class HuggingFaceBinaryDataset(Dataset[dict[str, Any]]):
             "label": torch.tensor(label, dtype=torch.float32),
             "degradation": description,
             "sample_id": sample_id,
+            "generator": str(row.get(self.source.get("generator_column", "generator"), "unknown")),
         }
 
 

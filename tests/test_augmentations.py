@@ -6,12 +6,14 @@ from PIL import Image
 
 from augmentations import (
     CompoundDegradation,
+    ImagePreprocessor,
     center_crop_resize,
     deterministic_condition,
     gaussian_blur,
     jpeg_compress,
     resize_roundtrip,
 )
+import pytest
 
 
 def test_fixed_degradations_preserve_image_size() -> None:
@@ -59,3 +61,21 @@ def test_late_curriculum_composes_one_to_three_transforms() -> None:
     _, applied = degradation(Image.new("RGB", (64, 64), color="gray"))
     assert 1 <= len(applied) <= 3
     assert len({item.name for item in applied}) == len(applied)
+
+
+def test_center_crop_preprocessor_preserves_square_output() -> None:
+    preprocessor = ImagePreprocessor(
+        32,
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        resize_mode="center_crop",
+    )
+    image = Image.new("RGB", (80, 40), color="gray")
+
+    assert preprocessor.resize(image).size == (32, 32)
+    assert preprocessor(image).shape == (3, 32, 32)
+
+
+def test_invalid_resize_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="resize_mode"):
+        ImagePreprocessor(32, [0.0] * 3, [1.0] * 3, resize_mode="warp")

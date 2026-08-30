@@ -26,7 +26,9 @@ from utils import (
 )
 
 
-def condition_grid(config: dict[str, Any]) -> list[tuple[str, str, float | int | None]]:
+def condition_grid(
+    config: dict[str, Any], requested: set[str] | None = None
+) -> list[tuple[str, str, float | int | None]]:
     augmentation = config["augmentation"]
     conditions: list[tuple[str, str, float | int | None]] = [("clean", "clean", None)]
     conditions.extend(
@@ -50,7 +52,13 @@ def condition_grid(config: dict[str, Any]) -> list[tuple[str, str, float | int |
     )
     crop = float(augmentation["center_crop_fraction"])
     conditions.append((f"center_crop_{crop:g}", "crop", crop))
-    return conditions
+    if requested is None:
+        return conditions
+    selected = [condition for condition in conditions if condition[0] in requested]
+    unknown = requested.difference(condition[0] for condition in selected)
+    if unknown:
+        raise ValueError(f"Unknown evaluation conditions: {sorted(unknown)}")
+    return selected
 
 
 def make_loader(dataset: torch.utils.data.Dataset, config: dict[str, Any], seed: int) -> DataLoader:
@@ -91,7 +99,12 @@ def score_condition(
     return binary_metrics(labels, probabilities, threshold)
 
 
-def main(config_path: str, checkpoint_path: str, source_name: str) -> None:
+def main(
+    config_path: str,
+    checkpoint_path: str,
+    source_name: str,
+    requested_conditions: list[str] | None = None,
+) -> None:
     config = load_config(config_path)
     seed = int(config.get("seed", 42))
     seed_everything(seed)
@@ -110,11 +123,17 @@ def main(config_path: str, checkpoint_path: str, source_name: str) -> None:
     if source_name not in config["data"]:
         raise KeyError(f"data.{source_name} is not defined in {config_path}")
     preprocessor = ImagePreprocessor(
-        model_config["image_size"], model_config["image_mean"], model_config["image_std"]
+        model_config["image_size"],
+        model_config["image_mean"],
+        model_config["image_std"],
+        resize_mode=model_config.get("resize_mode", "stretch"),
     )
     threshold = float(config["evaluation"].get("threshold", 0.5))
     results: list[dict[str, Any]] = []
-    for index, (display_name, operation, value) in enumerate(condition_grid(config)):
+    selected_conditions = set(requested_conditions) if requested_conditions else None
+    for index, (display_name, operation, value) in enumerate(
+        condition_grid(config, selected_conditions)
+    ):
         transform = deterministic_condition(operation, value, seed + index)
         dataset = build_dataset(
             config["data"][source_name],
@@ -135,14 +154,25 @@ def main(config_path: str, checkpoint_path: str, source_name: str) -> None:
         print(result)
 
     transformed = [row for row in results if row["condition"] != "clean"]
+    clean = next((row for row in results if row["condition"] == "clean"), None)
     summary = {
         "checkpoint": str(Path(checkpoint_path).resolve()),
         "source": source_name,
         "threshold": threshold,
-        "clean_accuracy": results[0]["accuracy"],
-        "mean_transformed_accuracy": sum(row["accuracy"] for row in transformed) / len(transformed),
-        "worst_condition": min(transformed, key=lambda row: row["accuracy"])["condition"],
-        "worst_condition_accuracy": min(row["accuracy"] for row in transformed),
+        "clean_accuracy": clean["accuracy"] if clean else None,
+        "mean_transformed_accuracy": (
+            sum(row["accuracy"] for row in transformed) / len(transformed)
+            if transformed
+            else None
+        ),
+        "worst_condition": (
+            min(transformed, key=lambda row: row["accuracy"])["condition"]
+            if transformed
+            else None
+        ),
+        "worst_condition_accuracy": (
+            min(row["accuracy"] for row in transformed) if transformed else None
+        ),
         "conditions": results,
     }
 
@@ -150,19 +180,30 @@ def main(config_path: str, checkpoint_path: str, source_name: str) -> None:
     csv_path = output_dir / config["evaluation"].get("output_csv", "robustness.csv")
     json_path = output_dir / config["evaluation"].get("output_json", "robustness.json")
     with open(csv_path, "w", newline="", encoding="utf-8") as handle:
-        fieldnames = ["condition", "operation", "value", "accuracy", "auroc", "f1", "count"]
+        fieldnames = [
+            "condition",
+            "operation",
+            "value",
+            "accuracy",
+            "balanced_accuracy",
+            "auroc",
+            "f1",
+            "precision",
+            "real_recall",
+            "fake_recall",
+            "tn",
+            "fp",
+            "fn",
+            "tp",
+            "count",
+        ]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
     dump_json(summary, json_path)
     print(f"Saved: {csv_path}")
     print(f"Saved: {json_path}")
-    print(
-        "Summary: "
-        f"clean={summary['clean_accuracy']:.4f}, "
-        f"mean_transformed={summary['mean_transformed_accuracy']:.4f}, "
-        f"worst={summary['worst_condition']} ({summary['worst_condition_accuracy']:.4f})"
-    )
+    print(f"Summary: {summary}")
 
 
 if __name__ == "__main__":
@@ -174,5 +215,10 @@ if __name__ == "__main__":
         default="val",
         help="Dataset key under config data (for example val or robustness_test)",
     )
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        help="Optional condition names, for example: --conditions clean jpeg_q30 blur_sigma2",
+    )
     args = parser.parse_args()
-    main(args.config, args.checkpoint, args.source)
+    main(args.config, args.checkpoint, args.source, args.conditions)

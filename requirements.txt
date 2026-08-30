@@ -7,4 +7,5 @@ Pillow>=10.0
 scikit-learn>=1.3
 tqdm>=4.66
 datasets>=2.18
+ImageHash>=4.3
 pytest>=8.0

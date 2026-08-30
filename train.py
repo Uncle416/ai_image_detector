@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
@@ -41,10 +41,33 @@ def make_loader(
 ) -> DataLoader:
     generator = torch.Generator()
     generator.manual_seed(seed)
+    sampler = None
+    sampling = str(config.get("sampling", "shuffle")).lower()
+    if shuffle and sampling == "group_balanced":
+        samples = getattr(dataset, "samples", None)
+        if samples is None:
+            raise ValueError("group_balanced sampling requires a manifest/imagefolder dataset")
+        group_counts: defaultdict[tuple[int, str], int] = defaultdict(int)
+        for sample in samples:
+            group_counts[(int(sample.label), str(sample.generator))] += 1
+        weights = [
+            1.0 / group_counts[(int(sample.label), str(sample.generator))]
+            for sample in samples
+        ]
+        sampler = WeightedRandomSampler(
+            weights,
+            num_samples=len(weights),
+            replacement=True,
+            generator=generator,
+        )
+        shuffle = False
+    elif sampling not in {"shuffle", "group_balanced"}:
+        raise ValueError("data.sampling must be 'shuffle' or 'group_balanced'")
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         num_workers=int(config.get("num_workers", 4)),
         pin_memory=bool(config.get("pin_memory", True)) and torch.cuda.is_available(),
         worker_init_fn=seed_worker,
@@ -165,6 +188,7 @@ def main(config_path: str) -> None:
         config["model"]["image_size"],
         config["model"]["image_mean"],
         config["model"]["image_std"],
+        resize_mode=config["model"].get("resize_mode", "stretch"),
     )
     train_dataset = build_dataset(
         config["data"]["train"],
@@ -203,6 +227,8 @@ def main(config_path: str) -> None:
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
     start_epoch = 0
+    selection_metric = str(config["training"].get("selection_metric", "accuracy"))
+    best_metric = -1.0
     best_accuracy = -1.0
     resume = config["training"].get("resume")
     if resume:
@@ -211,6 +237,12 @@ def main(config_path: str) -> None:
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = int(checkpoint["epoch"]) + 1
+        best_metric = float(
+            checkpoint.get(
+                "best_metric",
+                checkpoint.get("best_accuracy", -1.0),
+            )
+        )
         best_accuracy = float(checkpoint.get("best_accuracy", -1.0))
         model.set_backbone_trainable(start_epoch >= freeze_epochs)
 
@@ -235,18 +267,27 @@ def main(config_path: str) -> None:
         history.append(record)
         print(record)
 
+        metric_value = val_metrics.get(selection_metric)
+        if metric_value is None:
+            raise ValueError(
+                f"training.selection_metric={selection_metric!r} is unavailable in validation metrics"
+            )
+        metric_value = float(metric_value)
+        best_accuracy = max(best_accuracy, float(val_metrics["accuracy"]))
         payload = {
             "epoch": epoch,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
-            "best_accuracy": max(best_accuracy, float(val_metrics["accuracy"])),
+            "selection_metric": selection_metric,
+            "best_metric": max(best_metric, metric_value),
+            "best_accuracy": best_accuracy,
             "config": config,
         }
         atomic_torch_save(payload, output_dir / "last.pt")
-        if float(val_metrics["accuracy"]) > best_accuracy:
-            best_accuracy = float(val_metrics["accuracy"])
-            payload["best_accuracy"] = best_accuracy
+        if metric_value > best_metric:
+            best_metric = metric_value
+            payload["best_metric"] = best_metric
             atomic_torch_save(payload, output_dir / "best.pt")
         dump_json(history, output_dir / "history.json")
 

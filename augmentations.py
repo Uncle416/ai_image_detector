@@ -163,18 +163,36 @@ class CompoundDegradation:
 
 
 class ImagePreprocessor:
-    def __init__(self, size: int, mean: list[float], std: list[float]) -> None:
+    def __init__(
+        self,
+        size: int,
+        mean: list[float],
+        std: list[float],
+        resize_mode: str = "stretch",
+    ) -> None:
         self.size = int(size)
         self.mean = mean
         self.std = std
+        self.resize_mode = str(resize_mode).lower()
+        if self.resize_mode not in {"stretch", "center_crop"}:
+            raise ValueError("resize_mode must be 'stretch' or 'center_crop'")
 
     def resize(self, image: Image.Image) -> Image.Image:
-        return TF.resize(
-            ensure_rgb(image),
-            [self.size, self.size],
+        image = ensure_rgb(image)
+        if self.resize_mode == "stretch":
+            return TF.resize(
+                image,
+                [self.size, self.size],
+                interpolation=InterpolationMode.BICUBIC,
+                antialias=True,
+            )
+        resized = TF.resize(
+            image,
+            self.size,
             interpolation=InterpolationMode.BICUBIC,
             antialias=True,
         )
+        return TF.center_crop(resized, [self.size, self.size])
 
     def to_tensor(self, image: Image.Image) -> torch.Tensor:
         return TF.normalize(TF.to_tensor(image), mean=self.mean, std=self.std)

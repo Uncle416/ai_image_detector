@@ -8,6 +8,8 @@
 
 暂未加入 local patch、频谱分支、worst-group loss 和 generator-disjoint 自动划分，避免首轮实验难以定位收益来源。
 
+V2.0 的完整技术说明与外部实验结论见 [`V2_REPORT.md`](V2_REPORT.md)。针对外部泛化问题的数据扩展版见 [`V2_1_GUIDE.md`](V2_1_GUIDE.md)、`prepare_v21_data.py` 和 `config.v2_1.yaml`。
+
 ## 关键约定
 
 - 标签固定为 `0 = Real`、`1 = AI`。
