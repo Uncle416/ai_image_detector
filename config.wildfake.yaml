@@ -1,0 +1,49 @@
+seed: 42
+
+runtime:
+  device: auto
+  precision: auto
+  allow_tf32: true
+  cudnn_benchmark: true
+  deterministic: false
+
+data:
+  wildfake_demo:
+    kind: manifest
+    path: data/wildfake_demo.csv
+    root: data/wildfake_eval
+    split: test
+  label_map:
+    0: 0
+    1: 1
+  num_workers: 2
+  pin_memory: true
+
+# evaluate.py normally restores this section from the checkpoint.
+# These values are a fallback for older checkpoints without embedded config.
+model:
+  backbone: facebook/dinov2-base
+  image_size: 448
+  pooling: cls_mean
+  head_hidden_dim: 512
+  dropout: 0.2
+  gradient_checkpointing: false
+  max_parameters: 2000000000
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
+
+augmentation:
+  enabled: true
+  jpeg_qualities: [90, 70, 50, 30]
+  blur_sigmas: [0.5, 1.0, 2.0]
+  resize_scales: [0.5, 0.25]
+  noise_sigmas: [0.02, 0.05, 0.10]
+  color_jitter: 0.20
+  center_crop_fraction: 0.80
+
+evaluation:
+  # Safe default for a 6 GB RTX 3060 laptop. Increase only after clean evaluation works.
+  batch_size: 1
+  threshold: 0.5
+  output_csv: wildfake_robustness.csv
+  output_json: wildfake_robustness.json

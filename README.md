@@ -10,6 +10,9 @@
 
 V2.0 的完整技术说明与外部实验结论见 [`V2_REPORT.md`](V2_REPORT.md)。针对外部泛化问题的数据扩展版见 [`V2_1_GUIDE.md`](V2_1_GUIDE.md)、`prepare_v21_data.py` 和 `config.v2_1.yaml`。
 
+新电脑获取代码、WildFake 演示验证集并运行 checkpoint 的完整流程见
+[`VALIDATION_SETUP.md`](VALIDATION_SETUP.md)。
+
 ## 关键约定
 
 - 标签固定为 `0 = Real`、`1 = AI`。
