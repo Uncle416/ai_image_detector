@@ -31,6 +31,10 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available(), tor
 
 ## 2. 下载四个 WildFake 源文件
 
+WildFake 的大文件在国际镜像上可能未完整同步。下载本数据集时请使用
+ModelScope 默认站点，不要设置 `MODELSCOPE_DOMAIN=www.modelscope.ai`。
+如果当前 Linux 终端已经设置过，先执行 `unset MODELSCOPE_DOMAIN`。
+
 ```bash
 mkdir -p data/wildfake_raw
 modelscope download --dataset hy2628982280/WildFake \
