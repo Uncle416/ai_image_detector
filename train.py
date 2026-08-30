@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
-from collections import defaultdict
+import subprocess
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +14,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
-from augmentations import CompoundDegradation, ImagePreprocessor
+from augmentations import CompoundDegradation, build_model_preprocessors
 from dataset import build_dataset
 from losses import paired_classification_consistency_loss
 from metrics import binary_metrics
@@ -30,6 +32,51 @@ from utils import (
     seed_everything,
     seed_worker,
 )
+
+
+def file_sha256(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dataset_summary(
+    dataset: torch.utils.data.Dataset, source_config: dict[str, Any]
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {"count": len(dataset)}
+    samples = getattr(dataset, "samples", None)
+    if samples is not None:
+        summary["labels"] = dict(
+            sorted(Counter(str(int(sample.label)) for sample in samples).items())
+        )
+        summary["generators"] = dict(
+            sorted(Counter(str(sample.generator) for sample in samples).items())
+        )
+    manifest_value = source_config.get("path")
+    if manifest_value:
+        manifest = Path(manifest_value).expanduser().resolve()
+        summary["manifest"] = str(manifest)
+        summary["manifest_sha256"] = file_sha256(manifest)
+    summary["split"] = source_config.get("split")
+    return summary
+
+
+def git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
 
 
 def make_loader(
@@ -96,6 +143,11 @@ def train_one_epoch(
     for batch_index, batch in enumerate(progress):
         clean = batch["clean"].to(device, non_blocking=True)
         augmented = batch["augmented"].to(device, non_blocking=True)
+        local_patches = None
+        if "clean_local" in batch:
+            local_patches = torch.cat(
+                [batch["clean_local"], batch["augmented_local"]], dim=0
+            ).to(device, non_blocking=True)
         labels = batch["label"].to(device, non_blocking=True)
 
         with torch.autocast(
@@ -103,7 +155,9 @@ def train_one_epoch(
             dtype=precision.dtype,
             enabled=precision.autocast_enabled,
         ):
-            logits, features = model(torch.cat([clean, augmented], dim=0))
+            logits, features = model(
+                torch.cat([clean, augmented], dim=0), local_patches=local_patches
+            )
             clean_logits, augmented_logits = logits.chunk(2)
             clean_features, augmented_features = features.chunk(2)
             loss, parts = paired_classification_consistency_loss(
@@ -151,13 +205,18 @@ def validate(
     loss_total = 0.0
     for batch in tqdm(loader, desc="val", leave=False):
         images = batch["clean"].to(device, non_blocking=True)
+        local_patches = (
+            batch["clean_local"].to(device, non_blocking=True)
+            if "clean_local" in batch
+            else None
+        )
         targets = batch["label"].to(device, non_blocking=True)
         with torch.autocast(
             device_type=device.type,
             dtype=precision.dtype,
             enabled=precision.autocast_enabled,
         ):
-            logits, _ = model(images)
+            logits, _ = model(images, local_patches=local_patches)
             loss = F.binary_cross_entropy_with_logits(logits, targets)
         loss_total += float(loss.item())
         labels.extend(targets.cpu().tolist())
@@ -184,19 +243,24 @@ def main(config_path: str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model = DinoBinaryClassifier(config["model"])
-    preprocessor = ImagePreprocessor(
-        config["model"]["image_size"],
-        config["model"]["image_mean"],
-        config["model"]["image_std"],
-        resize_mode=config["model"].get("resize_mode", "stretch"),
+    preprocessor, local_patch_sampler, local_preprocessor = build_model_preprocessors(
+        config["model"]
     )
     train_dataset = build_dataset(
         config["data"]["train"],
         config["data"],
         preprocessor,
         degradation=CompoundDegradation(config["augmentation"]),
+        local_patch_sampler=local_patch_sampler,
+        local_preprocessor=local_preprocessor,
     )
-    val_dataset = build_dataset(config["data"]["val"], config["data"], preprocessor)
+    val_dataset = build_dataset(
+        config["data"]["val"],
+        config["data"],
+        preprocessor,
+        local_patch_sampler=local_patch_sampler,
+        local_preprocessor=local_preprocessor,
+    )
     train_loader = make_loader(
         train_dataset, int(config["training"]["batch_size"]), config["data"], True, seed
     )
@@ -210,6 +274,21 @@ def main(config_path: str) -> None:
     print(f"Runtime: {runtime_summary(device, precision)}")
     print(f"Parameters: {model.parameter_summary()}")
     print(f"Train/val samples: {len(train_dataset)}/{len(val_dataset)}")
+    config_file = Path(config_path).expanduser().resolve()
+    run_metadata = {
+        "schema_version": 1,
+        "git_commit": git_commit(),
+        "config_path": str(config_file),
+        "config_sha256": file_sha256(config_file),
+        "model": {
+            "architecture": model.architecture,
+            **model.parameter_summary(),
+        },
+        "train_dataset": dataset_summary(train_dataset, config["data"]["train"]),
+        "val_dataset": dataset_summary(val_dataset, config["data"]["val"]),
+    }
+    dump_json(run_metadata, output_dir / "run_metadata.json")
+    print(f"Run metadata: {run_metadata}")
 
     optimizer = torch.optim.AdamW(
         [
@@ -283,6 +362,7 @@ def main(config_path: str) -> None:
             "best_metric": max(best_metric, metric_value),
             "best_accuracy": best_accuracy,
             "config": config,
+            "metadata": run_metadata,
         }
         atomic_torch_save(payload, output_dir / "last.pt")
         if metric_value > best_metric:
@@ -293,7 +373,7 @@ def main(config_path: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train the V0-V2 DINOv2 AIGC detector")
+    parser = argparse.ArgumentParser(description="Train the V0-V3 DINOv2 AIGC detector")
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
     main(args.config)

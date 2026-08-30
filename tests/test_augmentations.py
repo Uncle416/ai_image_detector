@@ -7,6 +7,7 @@ from PIL import Image
 from augmentations import (
     CompoundDegradation,
     ImagePreprocessor,
+    TexturePatchSampler,
     center_crop_resize,
     deterministic_condition,
     gaussian_blur,
@@ -79,3 +80,34 @@ def test_center_crop_preprocessor_preserves_square_output() -> None:
 def test_invalid_resize_mode_is_rejected() -> None:
     with pytest.raises(ValueError, match="resize_mode"):
         ImagePreprocessor(32, [0.0] * 3, [1.0] * 3, resize_mode="warp")
+
+
+def test_texture_sampler_returns_rich_then_poor_regions() -> None:
+    array = np.zeros((32, 64, 3), dtype=np.uint8)
+    checker = (np.indices((32, 32)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    array[:, 32:, :] = checker[:, :, None]
+    sampler = TexturePatchSampler(
+        patch_size=32,
+        rich_patches=1,
+        poor_patches=1,
+        candidate_grid=2,
+        score_size=32,
+    )
+
+    prepared, boxes = sampler.select_boxes(Image.fromarray(array))
+    patches = sampler.sample(prepared)
+
+    assert boxes[0][0] == 32
+    assert boxes[1][0] == 0
+    assert len(patches) == 2
+    assert all(patch.size == (32, 32) for patch in patches)
+
+
+def test_texture_sampler_upsizes_small_images_and_keeps_pair_shape() -> None:
+    sampler = TexturePatchSampler(patch_size=32, rich_patches=2, poor_patches=2)
+    image = Image.new("RGB", (8, 12), color="gray")
+
+    clean, augmented = sampler.sample_pair(image, image)
+
+    assert len(clean) == len(augmented) == 4
+    assert all(patch.size == (32, 32) for patch in clean + augmented)

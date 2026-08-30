@@ -9,7 +9,12 @@ import torch
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 
-from augmentations import CompoundDegradation, ImagePreprocessor, ensure_rgb
+from augmentations import (
+    CompoundDegradation,
+    ImagePreprocessor,
+    TexturePatchSampler,
+    ensure_rgb,
+)
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
@@ -136,6 +141,8 @@ class BinaryImageDataset(Dataset[dict[str, Any]]):
         preprocessor: ImagePreprocessor,
         degradation: CompoundDegradation | None = None,
         evaluation_transform: Callable[[Image.Image, int], Image.Image] | None = None,
+        local_patch_sampler: TexturePatchSampler | None = None,
+        local_preprocessor: ImagePreprocessor | None = None,
     ) -> None:
         if not samples:
             raise ValueError("Dataset contains no usable binary-labelled images")
@@ -143,6 +150,10 @@ class BinaryImageDataset(Dataset[dict[str, Any]]):
         self.preprocessor = preprocessor
         self.degradation = degradation
         self.evaluation_transform = evaluation_transform
+        self.local_patch_sampler = local_patch_sampler
+        self.local_preprocessor = local_preprocessor
+        if (local_patch_sampler is None) != (local_preprocessor is None):
+            raise ValueError("local_patch_sampler and local_preprocessor must be provided together")
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -165,19 +176,27 @@ class BinaryImageDataset(Dataset[dict[str, Any]]):
 
         if self.evaluation_transform is not None:
             image = self.evaluation_transform(image, index)
-            return {
+            result = {
                 "image": self.preprocessor(image),
                 "label": torch.tensor(sample.label, dtype=torch.float32),
                 "sample_id": sample.sample_id,
                 "generator": sample.generator,
             }
+            if self.local_patch_sampler is not None and self.local_preprocessor is not None:
+                result["local_patches"] = torch.stack(
+                    [
+                        self.local_preprocessor(patch)
+                        for patch in self.local_patch_sampler.sample(image)
+                    ]
+                )
+            return result
 
         if self.degradation is None:
             augmented_image, applied = image.copy(), []
         else:
             augmented_image, applied = self.degradation(image.copy())
         description = "+".join(f"{item.name}:{item.value}" for item in applied) or "clean"
-        return {
+        result = {
             "clean": self.preprocessor(image),
             "augmented": self.preprocessor(augmented_image),
             "label": torch.tensor(sample.label, dtype=torch.float32),
@@ -185,6 +204,17 @@ class BinaryImageDataset(Dataset[dict[str, Any]]):
             "sample_id": sample.sample_id,
             "generator": sample.generator,
         }
+        if self.local_patch_sampler is not None and self.local_preprocessor is not None:
+            clean_patches, augmented_patches = self.local_patch_sampler.sample_pair(
+                image, augmented_image
+            )
+            result["clean_local"] = torch.stack(
+                [self.local_preprocessor(patch) for patch in clean_patches]
+            )
+            result["augmented_local"] = torch.stack(
+                [self.local_preprocessor(patch) for patch in augmented_patches]
+            )
+        return result
 
 
 class HuggingFaceBinaryDataset(Dataset[dict[str, Any]]):
@@ -195,6 +225,8 @@ class HuggingFaceBinaryDataset(Dataset[dict[str, Any]]):
         preprocessor: ImagePreprocessor,
         degradation: CompoundDegradation | None = None,
         evaluation_transform: Callable[[Image.Image, int], Image.Image] | None = None,
+        local_patch_sampler: TexturePatchSampler | None = None,
+        local_preprocessor: ImagePreprocessor | None = None,
     ) -> None:
         try:
             from datasets import load_dataset
@@ -223,6 +255,10 @@ class HuggingFaceBinaryDataset(Dataset[dict[str, Any]]):
         self.preprocessor = preprocessor
         self.degradation = degradation
         self.evaluation_transform = evaluation_transform
+        self.local_patch_sampler = local_patch_sampler
+        self.local_preprocessor = local_preprocessor
+        if (local_patch_sampler is None) != (local_preprocessor is None):
+            raise ValueError("local_patch_sampler and local_preprocessor must be provided together")
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -240,12 +276,20 @@ class HuggingFaceBinaryDataset(Dataset[dict[str, Any]]):
 
         if self.evaluation_transform is not None:
             image = self.evaluation_transform(image, index)
-            return {
+            result = {
                 "image": self.preprocessor(image),
                 "label": torch.tensor(label, dtype=torch.float32),
                 "sample_id": sample_id,
                 "generator": str(row.get(self.source.get("generator_column", "generator"), "unknown")),
             }
+            if self.local_patch_sampler is not None and self.local_preprocessor is not None:
+                result["local_patches"] = torch.stack(
+                    [
+                        self.local_preprocessor(patch)
+                        for patch in self.local_patch_sampler.sample(image)
+                    ]
+                )
+            return result
 
         augmented_image, applied = (
             self.degradation(image.copy())
@@ -253,7 +297,7 @@ class HuggingFaceBinaryDataset(Dataset[dict[str, Any]]):
             else (image.copy(), [])
         )
         description = "+".join(f"{item.name}:{item.value}" for item in applied) or "clean"
-        return {
+        result = {
             "clean": self.preprocessor(image),
             "augmented": self.preprocessor(augmented_image),
             "label": torch.tensor(label, dtype=torch.float32),
@@ -261,6 +305,17 @@ class HuggingFaceBinaryDataset(Dataset[dict[str, Any]]):
             "sample_id": sample_id,
             "generator": str(row.get(self.source.get("generator_column", "generator"), "unknown")),
         }
+        if self.local_patch_sampler is not None and self.local_preprocessor is not None:
+            clean_patches, augmented_patches = self.local_patch_sampler.sample_pair(
+                image, augmented_image
+            )
+            result["clean_local"] = torch.stack(
+                [self.local_preprocessor(patch) for patch in clean_patches]
+            )
+            result["augmented_local"] = torch.stack(
+                [self.local_preprocessor(patch) for patch in augmented_patches]
+            )
+        return result
 
 
 def build_dataset(
@@ -269,12 +324,20 @@ def build_dataset(
     preprocessor: ImagePreprocessor,
     degradation: CompoundDegradation | None = None,
     evaluation_transform: Callable[[Image.Image, int], Image.Image] | None = None,
+    local_patch_sampler: TexturePatchSampler | None = None,
+    local_preprocessor: ImagePreprocessor | None = None,
 ) -> Dataset[dict[str, Any]]:
     kind = source.get("kind", "imagefolder").lower()
     label_map = data_config.get("label_map", {0: 0, 1: 1})
     if kind == "huggingface":
         return HuggingFaceBinaryDataset(
-            source, label_map, preprocessor, degradation, evaluation_transform
+            source,
+            label_map,
+            preprocessor,
+            degradation,
+            evaluation_transform,
+            local_patch_sampler,
+            local_preprocessor,
         )
     if kind == "manifest":
         samples = samples_from_manifest(source, label_map)
@@ -282,4 +345,11 @@ def build_dataset(
         samples = samples_from_imagefolder(source, data_config["class_to_label"])
     else:
         raise ValueError(f"Unsupported dataset kind: {kind}")
-    return BinaryImageDataset(samples, preprocessor, degradation, evaluation_transform)
+    return BinaryImageDataset(
+        samples,
+        preprocessor,
+        degradation,
+        evaluation_transform,
+        local_patch_sampler,
+        local_preprocessor,
+    )

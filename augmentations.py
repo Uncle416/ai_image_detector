@@ -201,6 +201,144 @@ class ImagePreprocessor:
         return self.to_tensor(self.resize(image))
 
 
+class TexturePatchSampler:
+    """Select native-resolution patches from texture-rich and texture-poor regions.
+
+    Candidate crops are placed on a regular grid and ranked by the variance of a
+    small discrete Laplacian.  Selection is deterministic for a given image.  A
+    clean/degraded pair can reuse the clean-image boxes so the consistency loss
+    compares the same spatial regions.
+    """
+
+    def __init__(
+        self,
+        patch_size: int = 224,
+        rich_patches: int = 2,
+        poor_patches: int = 2,
+        candidate_grid: int = 4,
+        score_size: int = 64,
+    ) -> None:
+        self.patch_size = int(patch_size)
+        self.rich_patches = int(rich_patches)
+        self.poor_patches = int(poor_patches)
+        self.candidate_grid = int(candidate_grid)
+        self.score_size = int(score_size)
+        if self.patch_size <= 0:
+            raise ValueError("local_patch_size must be positive")
+        if self.rich_patches < 0 or self.poor_patches < 0:
+            raise ValueError("Texture patch counts cannot be negative")
+        if self.rich_patches + self.poor_patches <= 0:
+            raise ValueError("At least one local patch is required")
+        if self.candidate_grid <= 0:
+            raise ValueError("local_candidate_grid must be positive")
+
+    @property
+    def num_patches(self) -> int:
+        return self.rich_patches + self.poor_patches
+
+    def _ensure_minimum_size(self, image: Image.Image) -> Image.Image:
+        image = ensure_rgb(image)
+        width, height = image.size
+        scale = max(self.patch_size / width, self.patch_size / height, 1.0)
+        if scale == 1.0:
+            return image
+        size = (max(self.patch_size, round(width * scale)), max(self.patch_size, round(height * scale)))
+        return image.resize(size, Image.Resampling.BICUBIC)
+
+    def _candidate_boxes(self, image: Image.Image) -> list[tuple[int, int, int, int]]:
+        width, height = image.size
+        max_left = width - self.patch_size
+        max_top = height - self.patch_size
+        xs = np.linspace(0, max_left, self.candidate_grid).round().astype(int).tolist()
+        ys = np.linspace(0, max_top, self.candidate_grid).round().astype(int).tolist()
+        return list(
+            dict.fromkeys(
+                (left, top, left + self.patch_size, top + self.patch_size)
+                for top in ys
+                for left in xs
+            )
+        )
+
+    def _texture_score(self, patch: Image.Image) -> float:
+        gray = patch.convert("L").resize(
+            (self.score_size, self.score_size), Image.Resampling.BILINEAR
+        )
+        array = np.asarray(gray, dtype=np.float32)
+        laplacian = (
+            -4.0 * array[1:-1, 1:-1]
+            + array[:-2, 1:-1]
+            + array[2:, 1:-1]
+            + array[1:-1, :-2]
+            + array[1:-1, 2:]
+        )
+        return float(laplacian.var())
+
+    def select_boxes(self, image: Image.Image) -> tuple[Image.Image, list[tuple[int, int, int, int]]]:
+        image = self._ensure_minimum_size(image)
+        candidates = self._candidate_boxes(image)
+        ranked = sorted(
+            ((self._texture_score(image.crop(box)), index, box) for index, box in enumerate(candidates)),
+            key=lambda item: (item[0], item[1]),
+        )
+        poor = [item[2] for item in ranked[: self.poor_patches]]
+        poor_set = set(poor)
+        rich = [item[2] for item in reversed(ranked) if item[2] not in poor_set][
+            : self.rich_patches
+        ]
+        selected = rich + poor
+        if len(selected) < self.num_patches:
+            fallback = [item[2] for item in reversed(ranked)] or candidates
+            selected.extend(
+                fallback[index % len(fallback)]
+                for index in range(self.num_patches - len(selected))
+            )
+        return image, selected
+
+    def sample(self, image: Image.Image) -> list[Image.Image]:
+        image, boxes = self.select_boxes(image)
+        return [image.crop(box) for box in boxes]
+
+    def sample_pair(
+        self, clean: Image.Image, augmented: Image.Image
+    ) -> tuple[list[Image.Image], list[Image.Image]]:
+        clean = self._ensure_minimum_size(clean)
+        augmented = ensure_rgb(augmented)
+        if augmented.size != clean.size:
+            augmented = augmented.resize(clean.size, Image.Resampling.BICUBIC)
+        clean, boxes = self.select_boxes(clean)
+        return (
+            [clean.crop(box) for box in boxes],
+            [augmented.crop(box) for box in boxes],
+        )
+
+
+def build_model_preprocessors(
+    model_config: dict[str, Any],
+) -> tuple[ImagePreprocessor, TexturePatchSampler | None, ImagePreprocessor | None]:
+    global_preprocessor = ImagePreprocessor(
+        model_config["image_size"],
+        model_config["image_mean"],
+        model_config["image_std"],
+        resize_mode=model_config.get("resize_mode", "stretch"),
+    )
+    if str(model_config.get("architecture", "global")).lower() != "global_local":
+        return global_preprocessor, None, None
+    sampler = TexturePatchSampler(
+        patch_size=int(model_config.get("local_patch_size", 224)),
+        rich_patches=int(model_config.get("texture_rich_patches", 2)),
+        poor_patches=int(model_config.get("texture_poor_patches", 2)),
+        candidate_grid=int(model_config.get("local_candidate_grid", 4)),
+        score_size=int(model_config.get("local_texture_score_size", 64)),
+    )
+    local_preprocessor = ImagePreprocessor(
+        sampler.patch_size,
+        model_config["image_mean"],
+        model_config["image_std"],
+        resize_mode="stretch",
+    )
+    return global_preprocessor, sampler, local_preprocessor
+
+
 @dataclass(frozen=True)
 class DeterministicCondition:
     name: str

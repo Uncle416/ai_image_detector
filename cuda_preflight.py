@@ -25,10 +25,19 @@ def main(config_path: str, run_forward: bool) -> None:
         model = DinoBinaryClassifier(config["model"]).to(device).eval()
         size = int(config["model"]["image_size"])
         sample = torch.zeros(1, 3, size, size, device=device)
+        local_patches = None
+        if model.architecture == "global_local":
+            patch_size = int(config["model"].get("local_patch_size", 224))
+            patch_count = int(config["model"].get("texture_rich_patches", 2)) + int(
+                config["model"].get("texture_poor_patches", 2)
+            )
+            local_patches = torch.zeros(
+                1, patch_count, 3, patch_size, patch_size, device=device
+            )
         with torch.inference_mode(), torch.autocast(
             device_type="cuda", dtype=precision.dtype, enabled=precision.autocast_enabled
         ):
-            logits, features = model(sample)
+            logits, features = model(sample, local_patches=local_patches)
         print(
             {
                 "forward": "ok",

@@ -1,14 +1,15 @@
-# 鲁棒 AI 图像检测器（V0–V2）
+# 鲁棒 AI 图像检测器（V0–V3）
 
 这是一个面向 hackathon 的 DINOv2 二分类原型，当前刻意只实现：
 
 - V0：DINOv2 全局图像编码器 + 二分类 MLP；
 - V1：与题目参数一致的 0–3 项复合退化和课程式增强；
-- V2：clean/degraded 配对分类损失与特征一致性损失。
+- V2：clean/degraded 配对分类损失与特征一致性损失；
+- V3：同一 DINOv2 共享编码 global image 与 2 个高纹理、2 个低纹理 local patches。
 
-暂未加入 local patch、频谱分支、worst-group loss 和 generator-disjoint 自动划分，避免首轮实验难以定位收益来源。
+暂未加入频谱分支、worst-group loss 和自动 degradation gating。V2.1/V3 的 generator-disjoint 划分由数据 manifest 明确控制。
 
-V2.0 的完整技术说明与外部实验结论见 [`V2_REPORT.md`](V2_REPORT.md)。针对外部泛化问题的数据扩展版见 [`V2_1_GUIDE.md`](V2_1_GUIDE.md)、`prepare_v21_data.py` 和 `config.v2_1.yaml`。
+V2.0 的完整技术说明与外部实验结论见 [`V2_REPORT.md`](V2_REPORT.md)。针对外部泛化问题的数据扩展版见 [`V2_1_GUIDE.md`](V2_1_GUIDE.md)、`prepare_v21_data.py` 和 `config.v2_1.yaml`。共享编码器的 global + 4 texture patch 版本见 [`V3_GUIDE.md`](V3_GUIDE.md) 与 `config.v3.yaml`。
 
 新电脑获取代码、WildFake 演示验证集并运行 checkpoint 的完整流程见
 [`VALIDATION_SETUP.md`](VALIDATION_SETUP.md)。

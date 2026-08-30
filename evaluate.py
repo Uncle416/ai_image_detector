@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from augmentations import ImagePreprocessor, deterministic_condition
+from augmentations import build_model_preprocessors, deterministic_condition
 from dataset import build_dataset
 from metrics import binary_metrics
 from model import DinoBinaryClassifier
@@ -88,12 +88,17 @@ def score_condition(
     probabilities: list[float] = []
     for batch in tqdm(loader, desc=description, leave=False):
         images = batch["image"].to(device, non_blocking=True)
+        local_patches = (
+            batch["local_patches"].to(device, non_blocking=True)
+            if "local_patches" in batch
+            else None
+        )
         with torch.autocast(
             device_type=device.type,
             dtype=precision.dtype,
             enabled=precision.autocast_enabled,
         ):
-            logits, _ = model(images)
+            logits, _ = model(images, local_patches=local_patches)
         labels.extend(batch["label"].tolist())
         probabilities.extend(torch.sigmoid(logits).cpu().tolist())
     return binary_metrics(labels, probabilities, threshold)
@@ -122,11 +127,8 @@ def main(
 
     if source_name not in config["data"]:
         raise KeyError(f"data.{source_name} is not defined in {config_path}")
-    preprocessor = ImagePreprocessor(
-        model_config["image_size"],
-        model_config["image_mean"],
-        model_config["image_std"],
-        resize_mode=model_config.get("resize_mode", "stretch"),
+    preprocessor, local_patch_sampler, local_preprocessor = build_model_preprocessors(
+        model_config
     )
     threshold = float(config["evaluation"].get("threshold", 0.5))
     results: list[dict[str, Any]] = []
@@ -140,6 +142,8 @@ def main(
             config["data"],
             preprocessor,
             evaluation_transform=transform,
+            local_patch_sampler=local_patch_sampler,
+            local_preprocessor=local_preprocessor,
         )
         metrics = score_condition(
             model,

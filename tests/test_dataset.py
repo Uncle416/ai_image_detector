@@ -1,6 +1,7 @@
 from PIL import Image
 
-from dataset import samples_from_imagefolder
+from augmentations import ImagePreprocessor, TexturePatchSampler
+from dataset import BinaryImageDataset, ImageSample, samples_from_imagefolder
 
 
 def test_imagefolder_limit_is_balanced(tmp_path) -> None:
@@ -20,3 +21,22 @@ def test_imagefolder_limit_is_balanced(tmp_path) -> None:
     assert len(samples) == 4
     assert sum(sample.label == 0 for sample in samples) == 2
     assert sum(sample.label == 1 for sample in samples) == 2
+
+
+def test_global_local_dataset_returns_paired_patch_tensors(tmp_path) -> None:
+    path = tmp_path / "sample.png"
+    Image.new("RGB", (80, 64), color="gray").save(path)
+    preprocessor = ImagePreprocessor(32, [0.0] * 3, [1.0] * 3)
+    sampler = TexturePatchSampler(32, rich_patches=2, poor_patches=2)
+    dataset = BinaryImageDataset(
+        [ImageSample(path=path, label=1, sample_id="sample")],
+        preprocessor,
+        local_patch_sampler=sampler,
+        local_preprocessor=preprocessor,
+    )
+
+    item = dataset[0]
+
+    assert item["clean"].shape == (3, 32, 32)
+    assert item["clean_local"].shape == (4, 3, 32, 32)
+    assert item["augmented_local"].shape == (4, 3, 32, 32)
