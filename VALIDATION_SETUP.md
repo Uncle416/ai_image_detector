@@ -10,9 +10,12 @@
 ```bash
 git clone https://github.com/Uncle416/ai_image_detector.git
 cd ai_image_detector
-python3 -m venv .venv --system-site-packages
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
+# 与原 RunPod PyTorch 2.8 / CUDA 12.8 环境保持一致
+python -m pip install torch==2.8.0 torchvision==0.23.0 \
+  --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt
 python -m pip install modelscope
 ```
