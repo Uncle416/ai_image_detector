@@ -4,6 +4,8 @@ import argparse
 import csv
 import hashlib
 import io
+import json
+import math
 import random
 import re
 from collections import Counter, defaultdict
@@ -353,6 +355,203 @@ def balanced_rows(rows: list[dict[str, str]], seed: int) -> list[dict[str, str]]
     return output
 
 
+def sample_balanced_by_generator(
+    rows: list[dict[str, str]],
+    total: int,
+    seed: int,
+    context: str,
+    minimum_fraction: float = 1.0,
+) -> list[dict[str, str]]:
+    """Select a class-balanced target while preventing one generator from dominating."""
+    if total <= 0 or total % 2:
+        raise ValueError(f"{context} total must be a positive even number, got {total}")
+    if not 0 < minimum_fraction <= 1:
+        raise ValueError("minimum_fraction must be in (0, 1]")
+
+    rng = random.Random(seed)
+    selected: list[dict[str, str]] = []
+    target_per_label = total // 2
+    grouped_by_label: dict[int, defaultdict[str, list[dict[str, str]]]] = {}
+    available_by_label: dict[int, int] = {}
+    for label in (0, 1):
+        groups: defaultdict[str, list[dict[str, str]]] = defaultdict(list)
+        for row in rows:
+            if int(row["label"]) == label:
+                groups[row.get("generator", "unknown")].append(row)
+        if not groups:
+            raise RuntimeError(f"{context} label={label} has no usable generators")
+        grouped_by_label[label] = groups
+        available_by_label[label] = sum(len(group) for group in groups.values())
+
+    actual_per_label = min(target_per_label, available_by_label[0], available_by_label[1])
+    minimum_per_label = math.ceil(target_per_label * minimum_fraction)
+    if actual_per_label < minimum_per_label:
+        raise RuntimeError(
+            f"{context} cannot meet the allowed quota range: target={total}, "
+            f"minimum={minimum_per_label * 2}, available={available_by_label}"
+        )
+    if actual_per_label < target_per_label:
+        print(
+            f"Warning: {context} selected {actual_per_label * 2}/{total} rows after "
+            f"filtering while preserving class balance"
+        )
+
+    for label in (0, 1):
+        groups = grouped_by_label[label]
+        generator_names = sorted(groups)
+        rng.shuffle(generator_names)
+        for group in groups.values():
+            rng.shuffle(group)
+
+        label_selection: list[dict[str, str]] = []
+        positions = Counter()
+        while len(label_selection) < actual_per_label:
+            made_progress = False
+            for generator in generator_names:
+                position = positions[generator]
+                group = groups[generator]
+                if position >= len(group):
+                    continue
+                label_selection.append(group[position])
+                positions[generator] += 1
+                made_progress = True
+                if len(label_selection) >= actual_per_label:
+                    break
+            if not made_progress:
+                raise RuntimeError(
+                    f"{context} label={label} could not meet quota {actual_per_label}"
+                )
+        selected.extend(label_selection)
+
+    rng.shuffle(selected)
+    return selected
+
+
+def _counter_for_json(rows: list[dict[str, str]], fields: tuple[str, ...]) -> dict[str, int]:
+    counts = Counter("/".join(str(row.get(field, "")) for field in fields) for row in rows)
+    return dict(sorted(counts.items()))
+
+
+def compose_v3_dataset(args: argparse.Namespace) -> None:
+    """Build a source-balanced V3 manifest around per-source target sizes."""
+    use_phash = args.phash_distance >= 0
+    benchmark_rows = [
+        ensure_fingerprints(row, use_phash) for row in read_manifest(args.benchmark_manifest)
+    ]
+    benchmark_sha = {row["sha256"] for row in benchmark_rows}
+    benchmark_tree = BKTree()
+    if use_phash:
+        for row in benchmark_rows:
+            benchmark_tree.add(int(row["phash"], 16))
+
+    inputs = [
+        ("SID_Set", args.sid_manifest),
+        ("CIFAKE", args.cifake_manifest),
+        ("WildFake", args.wildfake_manifest),
+    ]
+    candidates: defaultdict[str, list[dict[str, str]]] = defaultdict(list)
+    seen_sha: set[str] = set()
+    removed = Counter()
+
+    for source, manifest in inputs:
+        source_rows = read_manifest(manifest)
+        random.Random(args.seed).shuffle(source_rows)
+        for raw_row in source_rows:
+            if raw_row.get("holdout") == "1":
+                removed["holdout"] += 1
+                continue
+            row = ensure_fingerprints(raw_row, use_phash)
+            row["source"] = source
+            if row["sha256"] in benchmark_sha:
+                removed["benchmark_exact"] += 1
+                continue
+            if use_phash and benchmark_tree.has_within(
+                int(row["phash"], 16), args.phash_distance
+            ):
+                removed["benchmark_near"] += 1
+                continue
+            if row["sha256"] in seen_sha:
+                removed["duplicate"] += 1
+                continue
+            seen_sha.add(row["sha256"])
+            candidates[source].append(row)
+
+    requested_train = {
+        "SID_Set": args.sid_train_total,
+        "CIFAKE": args.cifake_train_total,
+        "WildFake": args.wildfake_train_total,
+    }
+    selected: list[dict[str, str]] = []
+    for offset, (source, total) in enumerate(requested_train.items()):
+        train_rows = [row for row in candidates[source] if row.get("split", "train") == "train"]
+        selected.extend(
+            sample_balanced_by_generator(
+                train_rows,
+                total,
+                args.seed + offset,
+                f"{source} train",
+                args.minimum_quota_fraction,
+            )
+        )
+
+    wildfake_val_candidates = [
+        row for row in candidates["WildFake"] if row.get("split", "train") == "val"
+    ]
+    selected_val = sample_balanced_by_generator(
+        wildfake_val_candidates,
+        args.wildfake_val_total,
+        args.seed + 100,
+        "WildFake val",
+        args.minimum_quota_fraction,
+    )
+    selected.extend(selected_val)
+
+    train_generators = {
+        row.get("generator", "unknown")
+        for row in selected
+        if row["source"] == "WildFake" and row.get("split", "train") == "train"
+    }
+    val_generators = {
+        row.get("generator", "unknown")
+        for row in selected
+        if row["source"] == "WildFake" and row.get("split", "train") == "val"
+    }
+    overlap = train_generators.intersection(val_generators)
+    if overlap:
+        raise RuntimeError(f"WildFake train/val generator leakage: {sorted(overlap)}")
+
+    rng = random.Random(args.seed)
+    rng.shuffle(selected)
+    write_manifest(args.output, selected)
+
+    selected_paths = {Path(row["path"]).resolve() for row in selected}
+    selected_bytes = sum(path.stat().st_size for path in selected_paths)
+    stats = {
+        "schema_version": 1,
+        "seed": args.seed,
+        "phash_distance": args.phash_distance,
+        "minimum_quota_fraction": args.minimum_quota_fraction,
+        "requested_train_totals": requested_train,
+        "requested_wildfake_val_total": args.wildfake_val_total,
+        "selected_rows": len(selected),
+        "selected_unique_bytes": selected_bytes,
+        "selected_unique_gib": round(selected_bytes / (1024**3), 3),
+        "source_split_label": _counter_for_json(selected, ("source", "split", "label")),
+        "source_split_generator": _counter_for_json(
+            selected, ("source", "split", "generator")
+        ),
+        "removed": dict(sorted(removed.items())),
+        "wildfake_train_generators": sorted(train_generators),
+        "wildfake_val_generators": sorted(val_generators),
+    }
+    stats_path = Path(args.stats_output or f"{args.output}.stats.json").expanduser().resolve()
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(stats_path, "w", encoding="utf-8") as handle:
+        json.dump(stats, handle, indent=2, ensure_ascii=False)
+    print(f"Saved audit statistics: {stats_path}")
+    print(f"Selected image bytes (files are referenced, not copied): {stats['selected_unique_gib']} GiB")
+
+
 def merge_manifests(args: argparse.Namespace) -> None:
     use_phash = args.phash_distance >= 0
     benchmark_rows = [
@@ -408,7 +607,7 @@ def merge_manifests(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare leakage-safe V2.1 training manifests")
+    parser = argparse.ArgumentParser(description="Prepare leakage-safe V2.1/V3 training manifests")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     sid = subparsers.add_parser("sid", help="Stream and materialize a balanced SID_Set subset")
@@ -455,6 +654,35 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--balance-classes", action="store_true")
     merge.add_argument("--seed", type=int, default=42)
     merge.set_defaults(function=merge_manifests)
+
+    compose = subparsers.add_parser(
+        "compose-v3",
+        help="Sample roughly balanced SID/CIFAKE/WildFake targets for V3 training",
+    )
+    compose.add_argument("--sid-manifest", required=True)
+    compose.add_argument("--cifake-manifest", required=True)
+    compose.add_argument("--wildfake-manifest", required=True)
+    compose.add_argument("--benchmark-manifest", required=True)
+    compose.add_argument("--output", required=True)
+    compose.add_argument("--stats-output")
+    compose.add_argument("--sid-train-total", type=int, default=40_000)
+    compose.add_argument("--cifake-train-total", type=int, default=40_000)
+    compose.add_argument("--wildfake-train-total", type=int, default=60_000)
+    compose.add_argument("--wildfake-val-total", type=int, default=10_000)
+    compose.add_argument(
+        "--minimum-quota-fraction",
+        type=float,
+        default=0.90,
+        help="Allow balanced post-dedup totals down to this fraction of each target",
+    )
+    compose.add_argument(
+        "--phash-distance",
+        type=int,
+        default=4,
+        help="Benchmark perceptual-hash exclusion distance; use -1 for exact SHA-256 only",
+    )
+    compose.add_argument("--seed", type=int, default=42)
+    compose.set_defaults(function=compose_v3_dataset)
     return parser
 
 

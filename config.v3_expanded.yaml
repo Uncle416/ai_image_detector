@@ -1,0 +1,98 @@
+seed: 42
+output_dir: /workspace/ai_image_detector/outputs/dinov2_v3_expanded
+
+runtime:
+  device: cuda:0
+  precision: bf16
+  allow_tf32: true
+  cudnn_benchmark: true
+  deterministic: false
+
+data:
+  train:
+    kind: manifest
+    path: /workspace/ai_image_detector/data/mixed_v3_expanded.csv
+    root: /
+    split: train
+    path_column: path
+    label_column: label
+    split_column: split
+    id_column: id
+    generator_column: generator
+    forbid:
+      holdout: ["1"]
+  val:
+    kind: manifest
+    path: /workspace/ai_image_detector/data/mixed_v3_expanded.csv
+    root: /
+    split: val
+    path_column: path
+    label_column: label
+    split_column: split
+    id_column: id
+    generator_column: generator
+  label_map:
+    0: 0
+    1: 1
+  # The composed manifest is already class/generator balanced. Plain shuffle
+  # preserves the intended 40k/40k/60k source exposure in every epoch.
+  sampling: shuffle
+  num_workers: 8
+  pin_memory: true
+
+model:
+  architecture: global_local
+  backbone: facebook/dinov2-base
+  image_size: 448
+  resize_mode: center_crop
+  pooling: cls_mean
+  local_patch_size: 224
+  texture_rich_patches: 2
+  texture_poor_patches: 2
+  local_candidate_grid: 4
+  local_texture_score_size: 64
+  local_fusion: concat
+  local_forward_chunk_size: 16
+  head_hidden_dim: 512
+  dropout: 0.2
+  gradient_checkpointing: true
+  max_parameters: 2000000000
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
+
+augmentation:
+  enabled: true
+  curriculum:
+    early_fraction: 0.25
+    middle_fraction: 0.60
+  jpeg_qualities: [90, 70, 50, 30]
+  blur_sigmas: [0.5, 1.0, 2.0]
+  resize_scales: [0.5, 0.25]
+  noise_sigmas: [0.02, 0.05, 0.10]
+  color_jitter: 0.20
+  center_crop_fraction: 0.80
+
+loss:
+  clean_bce_weight: 1.0
+  augmented_bce_weight: 1.0
+  lambda_consistency: 0.20
+
+training:
+  epochs: 6
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  backbone_lr: 5.0e-6
+  head_lr: 1.0e-4
+  weight_decay: 0.05
+  warmup_fraction: 0.10
+  max_grad_norm: 1.0
+  freeze_backbone_epochs: 1
+  selection_metric: auroc
+  amp: true
+  resume: null
+
+evaluation:
+  batch_size: 8
+  threshold: 0.5
+  output_csv: robustness_v3_expanded.csv
+  output_json: robustness_v3_expanded.json

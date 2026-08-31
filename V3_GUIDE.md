@@ -63,6 +63,10 @@ generator 计数和 manifest 哈希。
 
 ## 4. 扩大 WildFake 的实验
 
+需要按目标数量构建 SID_Set 约 40k + CIFAKE 约 40k + WildFake 约 60k 时，优先使用
+[`V3_EXPANDED_DATA_GUIDE.md`](V3_EXPANDED_DATA_GUIDE.md) 和
+`config.v3_expanded.yaml`；下面保留的是手工复制配置的通用方法。
+
 新数据先写成新的 manifest，例如：
 
 ```text

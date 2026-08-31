@@ -9,7 +9,7 @@
 
 暂未加入频谱分支、worst-group loss 和自动 degradation gating。V2.1/V3 的 generator-disjoint 划分由数据 manifest 明确控制。
 
-V2.0 的完整技术说明与外部实验结论见 [`V2_REPORT.md`](V2_REPORT.md)。针对外部泛化问题的数据扩展版见 [`V2_1_GUIDE.md`](V2_1_GUIDE.md)、`prepare_v21_data.py` 和 `config.v2_1.yaml`。共享编码器的 global + 4 texture patch 版本见 [`V3_GUIDE.md`](V3_GUIDE.md) 与 `config.v3.yaml`。
+V2.0 的完整技术说明与外部实验结论见 [`V2_REPORT.md`](V2_REPORT.md)。针对外部泛化问题的数据扩展版见 [`V2_1_GUIDE.md`](V2_1_GUIDE.md)、`prepare_v21_data.py` 和 `config.v2_1.yaml`。共享编码器的 global + 4 texture patch 版本见 [`V3_GUIDE.md`](V3_GUIDE.md) 与 `config.v3.yaml`。SID_Set 约 40k + CIFAKE 约 40k + WildFake 约 60k 的来源平衡方案见 [`V3_EXPANDED_DATA_GUIDE.md`](V3_EXPANDED_DATA_GUIDE.md) 与 `config.v3_expanded.yaml`。
 
 新电脑获取代码、WildFake 演示验证集并运行 checkpoint 的完整流程见
 [`VALIDATION_SETUP.md`](VALIDATION_SETUP.md)。
