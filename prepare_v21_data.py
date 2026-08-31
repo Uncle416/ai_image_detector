@@ -432,12 +432,29 @@ def _counter_for_json(rows: list[dict[str, str]], fields: tuple[str, ...]) -> di
     return dict(sorted(counts.items()))
 
 
+def resolve_manifest_paths(
+    rows: list[dict[str, str]], root: str | None
+) -> list[dict[str, str]]:
+    if root is None:
+        return rows
+    resolved_root = Path(root).expanduser().resolve()
+    resolved = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        path = Path(row["path"]).expanduser()
+        if not path.is_absolute():
+            row["path"] = str((resolved_root / path).resolve())
+        resolved.append(row)
+    return resolved
+
+
 def compose_v3_dataset(args: argparse.Namespace) -> None:
     """Build a source-balanced V3 manifest around per-source target sizes."""
     use_phash = args.phash_distance >= 0
-    benchmark_rows = [
-        ensure_fingerprints(row, use_phash) for row in read_manifest(args.benchmark_manifest)
-    ]
+    benchmark_rows = resolve_manifest_paths(
+        read_manifest(args.benchmark_manifest), args.benchmark_root
+    )
+    benchmark_rows = [ensure_fingerprints(row, use_phash) for row in benchmark_rows]
     benchmark_sha = {row["sha256"] for row in benchmark_rows}
     benchmark_tree = BKTree()
     if use_phash:
@@ -663,6 +680,10 @@ def build_parser() -> argparse.ArgumentParser:
     compose.add_argument("--cifake-manifest", required=True)
     compose.add_argument("--wildfake-manifest", required=True)
     compose.add_argument("--benchmark-manifest", required=True)
+    compose.add_argument(
+        "--benchmark-root",
+        help="Root directory for relative image paths in the benchmark manifest",
+    )
     compose.add_argument("--output", required=True)
     compose.add_argument("--stats-output")
     compose.add_argument("--sid-train-total", type=int, default=40_000)

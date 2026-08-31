@@ -11,6 +11,7 @@ from prepare_v21_data import (
     compose_v3_dataset,
     is_forbidden_benchmark_row,
     read_manifest,
+    resolve_manifest_paths,
     resolve_extracted_path,
     sample_balanced_by_generator,
     write_manifest,
@@ -118,6 +119,7 @@ def test_compose_v3_enforces_source_quotas_and_generator_balance(
             cifake_manifest=str(cifake),
             wildfake_manifest=str(wildfake),
             benchmark_manifest=str(benchmark),
+            benchmark_root=None,
             output=str(output),
             stats_output=str(stats_output),
             sid_train_total=4,
@@ -172,6 +174,15 @@ def test_balanced_sampler_accepts_small_target_shortfall() -> None:
     assert Counter(row["label"] for row in selected) == {"0": 4, "1": 4}
 
 
+def test_resolve_manifest_paths_uses_benchmark_root(tmp_path: Path) -> None:
+    rows = [{"path": "real/example.jpg"}, {"path": str(tmp_path / "absolute.jpg")}]
+
+    resolved = resolve_manifest_paths(rows, str(tmp_path / "benchmark"))
+
+    assert resolved[0]["path"] == str((tmp_path / "benchmark/real/example.jpg").resolve())
+    assert resolved[1]["path"] == str((tmp_path / "absolute.jpg").resolve())
+
+
 def test_prepare_data_parser_exposes_compose_v3_defaults() -> None:
     args = build_parser().parse_args(
         [
@@ -194,3 +205,4 @@ def test_prepare_data_parser_exposes_compose_v3_defaults() -> None:
     assert args.wildfake_train_total == 60_000
     assert args.wildfake_val_total == 10_000
     assert args.minimum_quota_fraction == 0.90
+    assert args.benchmark_root is None

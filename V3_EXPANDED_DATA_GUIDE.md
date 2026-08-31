@@ -184,6 +184,7 @@ python prepare_v21_data.py compose-v3 \
   --cifake-manifest /workspace/ai_image_detector/data/cifake_v3_pool.csv \
   --wildfake-manifest /workspace/ai_image_detector/data/wildfake_v3_pool.csv \
   --benchmark-manifest /workspace/ai_image_detector/data/wildfake_demo.csv \
+  --benchmark-root /workspace/wildfake_eval \
   --output /workspace/ai_image_detector/data/mixed_v3_expanded.csv \
   --sid-train-total 40000 \
   --cifake-train-total 40000 \
