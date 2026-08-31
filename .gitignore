@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv*/
-data/
+data/*
+!data/reference_wildfake_demo.csv
 outputs/
 .DS_Store

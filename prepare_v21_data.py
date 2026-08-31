@@ -451,8 +451,12 @@ def resolve_manifest_paths(
 def compose_v3_dataset(args: argparse.Namespace) -> None:
     """Build a source-balanced V3 manifest around per-source target sizes."""
     use_phash = args.phash_distance >= 0
-    benchmark_rows = resolve_manifest_paths(
-        read_manifest(args.benchmark_manifest), args.benchmark_root
+    benchmark_rows = (
+        resolve_manifest_paths(
+            read_manifest(args.benchmark_manifest), args.benchmark_root
+        )
+        if args.benchmark_manifest
+        else []
     )
     benchmark_rows = [ensure_fingerprints(row, use_phash) for row in benchmark_rows]
     benchmark_sha = {row["sha256"] for row in benchmark_rows}
@@ -679,7 +683,10 @@ def build_parser() -> argparse.ArgumentParser:
     compose.add_argument("--sid-manifest", required=True)
     compose.add_argument("--cifake-manifest", required=True)
     compose.add_argument("--wildfake-manifest", required=True)
-    compose.add_argument("--benchmark-manifest", required=True)
+    compose.add_argument(
+        "--benchmark-manifest",
+        help="Optional external benchmark manifest for image-level leakage checks",
+    )
     compose.add_argument(
         "--benchmark-root",
         help="Root directory for relative image paths in the benchmark manifest",

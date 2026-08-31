@@ -170,7 +170,8 @@ python prepare_v21_data.py wildfake \
 
 ## 7. 合成最终 manifest
 
-外部 benchmark manifest 必须已经存在：
+如果训练与外部验证位于同一个 volume，可以传入外部 benchmark manifest 做额外的
+图片哈希防泄漏检查：
 
 ```text
 /workspace/ai_image_detector/data/wildfake_demo.csv
@@ -197,6 +198,12 @@ python prepare_v21_data.py compose-v3 \
 
 感知哈希会解码候选图片，CPU 上可能较慢。仅用于先检查数量和路径时，可以使用
 `--phash-distance -1` 只做 SHA-256 精确去重；最终正式 manifest 建议仍使用 4。
+
+如果 A100 只负责训练，外部演示图片保存在另一个 A40 Pod，可以省略
+`--benchmark-manifest` 和 `--benchmark-root`。`wildfake` 导出阶段仍会按元数据排除
+COCO val2017 与 DALL·E Advanced；GitHub 中的
+`data/reference_wildfake_demo.csv` 用于在验证 Pod 上复现固定的 13,841 张样本，不含
+图片本身。
 
 除 CSV 外还会生成：
 

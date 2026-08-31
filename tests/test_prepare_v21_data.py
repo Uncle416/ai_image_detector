@@ -206,3 +206,21 @@ def test_prepare_data_parser_exposes_compose_v3_defaults() -> None:
     assert args.wildfake_val_total == 10_000
     assert args.minimum_quota_fraction == 0.90
     assert args.benchmark_root is None
+
+
+def test_compose_v3_benchmark_is_optional() -> None:
+    args = build_parser().parse_args(
+        [
+            "compose-v3",
+            "--sid-manifest",
+            "sid.csv",
+            "--cifake-manifest",
+            "cifake.csv",
+            "--wildfake-manifest",
+            "wildfake.csv",
+            "--output",
+            "mixed.csv",
+        ]
+    )
+
+    assert args.benchmark_manifest is None
